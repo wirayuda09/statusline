@@ -29,7 +29,8 @@ local colors = {
     warn = '#fab387',
     info = '#89dceb',
     hint = '#94e2d5',
-    message = '#a6adc8'
+    message = '#a6adc8',
+    lsp_progress = '#f9e2af'
 }
 
 -- Mode mappings
@@ -62,7 +63,8 @@ local function setup_highlights()
         StatusLineWarn = { bg = colors.bg, fg = colors.warn },
         StatusLineInfo = { bg = colors.bg, fg = colors.info },
         StatusLineHint = { bg = colors.bg, fg = colors.hint },
-        StatusLineMessage = { bg = colors.bg, fg = colors.message, italic = true }
+        StatusLineMessage = { bg = colors.bg, fg = colors.message, italic = true },
+        StatusLineLspProgress = { bg = colors.bg, fg = colors.lsp_progress, italic = true }
     }
 
     for name, opts in pairs(highlights) do
@@ -202,6 +204,31 @@ local function get_git_branch()
     return cache.git_branch
 end
 
+-- Get LSP progress
+local function get_lsp_progress()
+    if not _G.lsp_progress then
+        return ''
+    end
+
+    local progress_parts = {}
+    for _, progress in pairs(_G.lsp_progress) do
+        local part = string.format("[%s] %s", progress.client, progress.title)
+        if progress.percentage > 0 then
+            part = part .. string.format(" (%d%%)", progress.percentage)
+        end
+        if progress.message and progress.message ~= "" then
+            part = part .. " " .. progress.message
+        end
+        table.insert(progress_parts, part)
+    end
+
+    local progress_str = table.concat(progress_parts, " | ")
+    if progress_str ~= "" then
+        return string.format('%%#StatusLineLspProgress# %s', progress_str)
+    end
+    return ''
+end
+
 -- Get LSP diagnostics
 local function get_diagnostics()
     local diagnostics = vim.diagnostic.get(0)
@@ -232,11 +259,12 @@ local function get_position()
     return string.format('%d:%d %d%%%%', line, col, math.floor(line / total * 100))
 end
 
--- Build left section (mode + file + git branch)
+-- Build left section (mode + file + git branch + lsp progress)
 local function build_left()
     local mode_name, mode_color = get_mode()
     local file_info = get_file_info()
     local git_branch = get_git_branch()
+    local lsp_progress = get_lsp_progress()
 
     local mode_hl = 'StatusLineModeNormal'
     if mode_color == colors.insert then
@@ -256,11 +284,13 @@ local function build_left()
         left_section = left_section .. string.format(' %%#StatusLineGit# %s', git_branch)
     end
 
+    -- Add LSP progress
+    if lsp_progress ~= '' then
+        left_section = left_section .. ' ' .. lsp_progress
+    end
+
     return left_section
 end
-
--- Build center section (messages)
-
 
 function M.clean_message(msg)
     msg = msg
@@ -268,7 +298,7 @@ function M.clean_message(msg)
         :gsub("…", "...") -- replace ellipsis with 3 dots
         :gsub("•", "-") -- replace bullet with dash
         :gsub("↪", "->") -- arrow right
-        :gsub("[\194-\244].", "") -- fallback: remove unprintable UTF-8 (optional)
+        :gsub("[\194\244].", "") -- fallback: remove unprintable UTF-8 (optional)
 
     return msg
 end
@@ -287,7 +317,6 @@ local function build_center()
     end
     return ''
 end
-
 
 -- Build right section
 local function build_right()
@@ -393,6 +422,41 @@ function M.setup(opts)
     setup_highlights()
     setup_message_capture()
 
+    -- Set up LSP progress handler
+    _G.lsp_progress = {}
+    vim.lsp.handlers["$/progress"] = function(_, result, ctx)
+        local client_id = ctx.client_id
+        local client = vim.lsp.get_client_by_id(client_id)
+        local value = result.value
+        if not value or not client then
+            return
+        end
+
+        local token = result.token
+        local client_name = client.name
+
+        if value.kind == "begin" then
+            _G.lsp_progress[token] = {
+                client = client_name,
+                title = value.title or "",
+                message = value.message or "",
+                percentage = value.percentage or 0,
+            }
+        elseif value.kind == "report" then
+            if _G.lsp_progress[token] then
+                _G.lsp_progress[token].message = value.message or _G.lsp_progress[token].message
+                _G.lsp_progress[token].percentage = value.percentage or _G.lsp_progress[token].percentage
+            end
+        elseif value.kind == "end" then
+            _G.lsp_progress[token] = nil
+        end
+
+        cache.last_update = 0 -- Force statusline update
+        vim.schedule(function()
+            vim.cmd("redrawstatus")
+        end)
+    end
+
     -- Set cmdheight to 0 and disable various message options
     cache.original_cmdheight = vim.o.cmdheight
     vim.o.cmdheight = 0
@@ -437,6 +501,9 @@ function M.setup(opts)
         callback = function()
             restore_message_capture()
             vim.o.cmdheight = cache.original_cmdheight
+
+            -- Clear LSP progress
+            _G.lsp_progress = {}
 
             if cache.git_timer and not cache.git_timer:is_closing() then
                 cache.git_timer:close()
