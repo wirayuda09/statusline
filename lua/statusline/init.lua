@@ -91,7 +91,6 @@ local function setup_highlights()
     end
 end
 
--- Message handling
 local function set_message(msg)
     msg = M.clean_message(msg)
     if msg == cache.last_message then
@@ -129,7 +128,6 @@ local function set_message(msg)
     end
 end
 
--- Override vim's echo functions to capture messages
 local function setup_message_capture()
     -- Store original functions
     _G._statusline_original_print = _G.print
@@ -161,7 +159,6 @@ local function setup_message_capture()
                 return -- Don't call original echo
             end
         end
-        -- Call original for empty/whitespace messages
         return _G._statusline_original_echo(chunks, history, opts)
     end
 end
@@ -208,7 +205,6 @@ local function get_file_info()
     return filename
 end
 
--- Get git branch with caching
 local function get_git_branch()
     if cache.git_timer and not cache.git_timer:is_closing() then
         return cache.git_branch
@@ -252,7 +248,6 @@ local function get_lsp_progress()
     return ''
 end
 
--- Get LSP diagnostics
 local function get_diagnostics()
     local diagnostics = vim.diagnostic.get(0)
     local counts = { error = 0, warn = 0, info = 0, hint = 0 }
@@ -274,7 +269,6 @@ local function get_diagnostics()
     return counts
 end
 
--- Get cursor position
 local function get_position()
     local line = vim.fn.line('.')
     local col = vim.fn.col('.')
@@ -282,7 +276,6 @@ local function get_position()
     return string.format('%d:%d %d%%%%', line, col, math.floor(line / total * 100))
 end
 
--- Build left section (mode + file + git branch + lsp progress + messages)
 local function build_left()
     local mode_name, mode_color = get_mode()
     local file_info = get_file_info()
@@ -340,7 +333,7 @@ local function build_right()
         table.insert(diag_parts, string.format('%%#StatusLineInfo#ℹ %d', diagnostics.info))
     end
     if diagnostics.hint > 0 then
-        table.insert(diag_parts, string.format('%%#StatusLineHint#💡 %d', diagnostics.hint))
+        table.insert(diag_parts, string.format('%%#StatusLineHint#● %d', diagnostics.hint))
     end
 
     local diag_str = table.concat(diag_parts, ' ')
