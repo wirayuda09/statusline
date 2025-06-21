@@ -323,7 +323,7 @@ local function build_left()
     return left_section
 end
 
--- Build right section
+-- Build right section (with diagnostic symbols)
 local function build_right()
     local diagnostics = get_diagnostics()
     local position = get_position()
@@ -331,19 +331,19 @@ local function build_right()
 
     local diag_parts = {}
     if diagnostics.error > 0 then
-        table.insert(diag_parts, string.format('%%#StatusLineError# %d', diagnostics.error))
+        table.insert(diag_parts, string.format('%%#StatusLineError#✘ %d', diagnostics.error))
     end
     if diagnostics.warn > 0 then
-        table.insert(diag_parts, string.format('%%#StatusLineWarn# %d', diagnostics.warn))
+        table.insert(diag_parts, string.format('%%#StatusLineWarn#⚠ %d', diagnostics.warn))
     end
     if diagnostics.info > 0 then
-        table.insert(diag_parts, string.format('%%#StatusLineInfo# %d', diagnostics.info))
+        table.insert(diag_parts, string.format('%%#StatusLineInfo#ℹ %d', diagnostics.info))
     end
     if diagnostics.hint > 0 then
-        table.insert(diag_parts, string.format('%%#StatusLineHint# %d', diagnostics.hint))
+        table.insert(diag_parts, string.format('%%#StatusLineHint#💡 %d', diagnostics.hint))
     end
 
-    local diag_str = table.concat(diag_parts, '')
+    local diag_str = table.concat(diag_parts, ' ')
     if diag_str ~= '' then
         diag_str = diag_str .. ' %#StatusLine#'
     end
