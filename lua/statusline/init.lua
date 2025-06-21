@@ -333,7 +333,7 @@ local function build_right()
         table.insert(diag_parts, string.format('%%#StatusLineInfo#ℹ %d', diagnostics.info))
     end
     if diagnostics.hint > 0 then
-        table.insert(diag_parts, string.format('%%#StatusLineHint#● %d', diagnostics.hint))
+        table.insert(diag_parts, string.format('%%#StatusLineHint#H %d', diagnostics.hint))
     end
 
     local diag_str = table.concat(diag_parts, ' ')
