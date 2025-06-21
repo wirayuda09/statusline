@@ -14,39 +14,122 @@ local cache = {
     original_cmdheight = vim.o.cmdheight
 }
 
--- Color definitions
-local colors = {
-    bg = '#1e1e2e',
-    fg = '#cdd6f4',
-    normal = '#89b4fa',
-    insert = '#a6e3a1',
-    visual = '#f9e2af',
-    replace = '#f38ba8',
-    command = '#cba6f7',
-    inactive = '#6c7086',
-    git = '#fab387',
-    error = '#f38ba8',
-    warn = '#fab387',
-    info = '#89dceb',
-    hint = '#94e2d5',
-    message = '#a6adc8',
-    lsp_progress = '#f9e2af'
-}
+-- Color definitions - will be populated from active colorscheme
+local colors = {}
 
--- Mode mappings
-local modes = {
-    ['n'] = { 'NORMAL', colors.normal },
-    ['i'] = { 'INSERT', colors.insert },
-    ['v'] = { 'VISUAL', colors.visual },
-    ['V'] = { 'V-LINE', colors.visual },
-    ['c'] = { 'COMMAND', colors.command },
-    ['s'] = { 'SELECT', colors.visual },
-    ['S'] = { 'S-LINE', colors.visual },
-    [''] = { 'S-BLOCK', colors.visual },
-    ['R'] = { 'REPLACE', colors.replace },
-    ['r'] = { 'REPLACE', colors.replace },
-    ['t'] = { 'TERMINAL', colors.command }
-}
+-- Function to get colors from active colorscheme
+local function get_colorscheme_colors()
+    local hl_groups = {
+        -- Base colors
+        bg = 'StatusLine',
+        fg = 'StatusLine',
+        inactive = 'StatusLineNC',
+        
+        -- Mode colors (using different highlight groups for variety)
+        normal = 'Function',
+        insert = 'String',
+        visual = 'Type',
+        replace = 'Error',
+        command = 'Special',
+        
+        -- Semantic colors
+        git = 'Comment',
+        error = 'Error',
+        warn = 'WarningMsg',
+        info = 'MoreMsg',
+        hint = 'Question',
+        message = 'Comment',
+        lsp_progress = 'Type'
+    }
+    
+    local scheme_colors = {}
+    
+    -- Helper function to safely get highlight colors
+    local function get_hl_color(hl_group, attr)
+        local success, hl = pcall(vim.api.nvim_get_hl, 0, { name = hl_group })
+        if success and hl and hl[attr] then
+            -- Convert RGB to hex
+            return string.format('#%06x', hl[attr])
+        end
+        return nil
+    end
+    
+    -- Extract colors from highlight groups
+    for name, hl_group in pairs(hl_groups) do
+        local color = get_hl_color(hl_group, 'fg')
+        if color then
+            scheme_colors[name] = color
+        end
+    end
+    
+    -- Try to get background color from StatusLine
+    local bg_color = get_hl_color('StatusLine', 'bg')
+    if bg_color then
+        scheme_colors.bg = bg_color
+    end
+    
+    -- Fallback colors if colorscheme doesn't provide them
+    local fallback_colors = {
+        bg = '#1e1e2e',
+        fg = '#cdd6f4',
+        normal = '#89b4fa',
+        insert = '#a6e3a1',
+        visual = '#f9e2af',
+        replace = '#f38ba8',
+        command = '#cba6f7',
+        inactive = '#6c7086',
+        git = '#fab387',
+        error = '#f38ba8',
+        warn = '#fab387',
+        info = '#89dceb',
+        hint = '#94e2d5',
+        message = '#a6adc8',
+        lsp_progress = '#f9e2af'
+    }
+    
+    -- Use scheme colors if available, otherwise fallback
+    for name, fallback in pairs(fallback_colors) do
+        colors[name] = scheme_colors[name] or fallback
+    end
+    
+    -- Ensure we have a background color for mode indicators
+    if not colors.bg or colors.bg == '' then
+        colors.bg = fallback_colors.bg
+    end
+    
+    -- Ensure we have a foreground color
+    if not colors.fg or colors.fg == '' then
+        colors.fg = fallback_colors.fg
+    end
+    
+    -- Debug: Log which colors were extracted (only in verbose mode)
+    if vim.g.statusline_debug then
+        print("Statusline colors extracted:")
+        for name, color in pairs(colors) do
+            print(string.format("  %s: %s", name, color))
+        end
+    end
+end
+
+-- Mode mappings (will be updated with dynamic colors)
+local modes = {}
+
+-- Update mode mappings with current colors
+local function update_mode_mappings()
+    modes = {
+        ['n'] = { 'NORMAL', colors.normal },
+        ['i'] = { 'INSERT', colors.insert },
+        ['v'] = { 'VISUAL', colors.visual },
+        ['V'] = { 'V-LINE', colors.visual },
+        ['c'] = { 'COMMAND', colors.command },
+        ['s'] = { 'SELECT', colors.visual },
+        ['S'] = { 'S-LINE', colors.visual },
+        [''] = { 'S-BLOCK', colors.visual },
+        ['R'] = { 'REPLACE', colors.replace },
+        ['r'] = { 'REPLACE', colors.replace },
+        ['t'] = { 'TERMINAL', colors.command }
+    }
+end
 
 function M.clean_message(msg)
     if not msg then return '' end
@@ -69,6 +152,10 @@ end
 
 -- Initialize highlight groups
 local function setup_highlights()
+    -- Refresh colors from active colorscheme
+    get_colorscheme_colors()
+    update_mode_mappings()
+    
     local highlights = {
         StatusLine = { bg = colors.bg, fg = colors.fg },
         StatusLineNC = { bg = colors.bg, fg = colors.inactive },
@@ -89,6 +176,43 @@ local function setup_highlights()
     for name, opts in pairs(highlights) do
         vim.api.nvim_set_hl(0, name, opts)
     end
+end
+
+-- Function to refresh colors when colorscheme changes
+local function refresh_colors()
+    setup_highlights()
+    cache.last_update = 0 -- Force statusline update
+    vim.schedule(function()
+        vim.cmd('redrawstatus')
+    end)
+end
+
+-- Function to handle popular external colorschemes
+local function handle_external_colorscheme()
+    local colorscheme = vim.g.colors_name or ''
+    
+    -- List of popular external colorschemes that might need special handling
+    local external_colorschemes = {
+        'tokyonight', 'catppuccin', 'gruvbox', 'nord', 'dracula', 
+        'onedark', 'material', 'nightfox', 'dayfox', 'duskfox',
+        'rose-pine', 'kanagawa', 'everforest', 'sonokai', 'edge',
+        'monokai', 'molokai', 'zenburn', 'solarized', 'wombat'
+    }
+    
+    -- Check if current colorscheme is in the list
+    for _, name in ipairs(external_colorschemes) do
+        if colorscheme:lower():find(name:lower()) then
+            -- For external colorschemes, we might need to wait a bit for colors to load
+            vim.schedule(function()
+                vim.defer_fn(function()
+                    refresh_colors()
+                end, 100) -- Wait 100ms for colorscheme to fully load
+            end)
+            return true
+        end
+    end
+    
+    return false
 end
 
 local function set_message(msg)
@@ -398,6 +522,21 @@ function M.silent_write()
     end
 end
 
+-- Public function to manually refresh colors
+function M.refresh_colors()
+    refresh_colors()
+end
+
+-- Public function to handle colorscheme plugin loading
+function M.handle_colorscheme_loaded()
+    -- Wait a bit for the colorscheme to fully load
+    vim.schedule(function()
+        vim.defer_fn(function()
+            refresh_colors()
+        end, 200) -- Wait 200ms for colorscheme to fully load
+    end)
+end
+
 function M.setup(opts)
     opts = opts or {}
 
@@ -413,6 +552,11 @@ function M.setup(opts)
 
     setup_highlights()
     setup_message_capture()
+
+    -- Handle initial colorscheme if already loaded
+    if vim.g.colors_name then
+        handle_external_colorscheme()
+    end
 
     -- Set up LSP progress handler
     _G.lsp_progress = {}
@@ -480,6 +624,27 @@ function M.setup(opts)
         callback = function()
             cache.last_update = 0
             vim.cmd('redrawstatus')
+        end
+    })
+
+    -- Refresh colors when colorscheme changes
+    vim.api.nvim_create_autocmd('ColorScheme', {
+        group = group,
+        callback = function()
+            -- Try to handle external colorschemes first
+            if not handle_external_colorscheme() then
+                -- For built-in colorschemes, refresh immediately
+                refresh_colors()
+            end
+        end
+    })
+
+    -- Handle colorscheme plugins that use User events
+    vim.api.nvim_create_autocmd('User', {
+        group = group,
+        pattern = { 'ColorScheme', 'Colorscheme', 'ThemeChanged' },
+        callback = function()
+            M.handle_colorscheme_loaded()
         end
     })
 
