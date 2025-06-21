@@ -48,6 +48,25 @@ local modes = {
     ['t'] = { 'TERMINAL', colors.command }
 }
 
+function M.clean_message(msg)
+    if not msg then return '' end
+    msg = tostring(msg)
+    msg = msg
+        :gsub("[\226\128\147]", "-") -- replace en dash (–) or em dash (—)
+        :gsub("…", "...") -- replace ellipsis with 3 dots
+        :gsub("•", "-") -- replace bullet with dash
+        :gsub("↪", "->") -- arrow right
+        :gsub("[\194\244].", "") -- fallback: remove unprintable UTF-8 (optional)
+
+    return msg
+end
+
+local function truncate(msg, max_width)
+    if not msg or msg == '' then return '' end
+    if #msg <= max_width then return msg end
+    return msg:sub(1, max_width - 1) .. '…'
+end
+
 -- Initialize highlight groups
 local function setup_highlights()
     local highlights = {
@@ -88,8 +107,10 @@ local function set_message(msg)
         cache.message_timer = nil
     end
 
-    -- Immediate redraw
-    vim.cmd('redrawstatus')
+    -- Use vim.schedule to avoid circular dependency
+    vim.schedule(function()
+        vim.cmd('redrawstatus')
+    end)
 
     -- Set timer to clear message
     if msg ~= '' then
@@ -97,7 +118,9 @@ local function set_message(msg)
         cache.message_timer:start(cache.message_timeout, 0, vim.schedule_wrap(function()
             cache.last_message = ''
             cache.last_update = 0
-            vim.cmd('redrawstatus')
+            vim.schedule(function()
+                vim.cmd('redrawstatus')
+            end)
             if cache.message_timer then
                 cache.message_timer:close()
                 cache.message_timer = nil
@@ -259,7 +282,7 @@ local function get_position()
     return string.format('%d:%d %d%%%%', line, col, math.floor(line / total * 100))
 end
 
--- Build left section (mode + file + git branch + lsp progress)
+-- Build left section (mode + file + git branch + lsp progress + messages)
 local function build_left()
     local mode_name, mode_color = get_mode()
     local file_info = get_file_info()
@@ -289,33 +312,15 @@ local function build_left()
         left_section = left_section .. ' ' .. lsp_progress
     end
 
-    return left_section
-end
-
-function M.clean_message(msg)
-    msg = msg
-        :gsub("[\226\128\147]", "-") -- replace en dash (–) or em dash (—)
-        :gsub("…", "...") -- replace ellipsis with 3 dots
-        :gsub("•", "-") -- replace bullet with dash
-        :gsub("↪", "->") -- arrow right
-        :gsub("[\194\244].", "") -- fallback: remove unprintable UTF-8 (optional)
-
-    return msg
-end
-
-local function truncate(msg, max_width)
-    if #msg <= max_width then return msg end
-    return msg:sub(1, max_width - 1) .. '…'
-end
-
-local function build_center()
+    -- Add message right after LSP progress
     if cache.last_message ~= '' then
-        local total_width = vim.o.columns
-        local max_center_width = math.floor(total_width * 0.33)
-        local msg = truncate(cache.last_message, max_center_width)
-        return string.format('%%#StatusLineMessage# %s', msg)
+        local total_width = vim.o.columns or 80                                -- fallback width
+        local max_message_width = math.max(25, math.floor(total_width * 0.25)) -- minimum 20 chars
+        local msg = truncate(cache.last_message, max_message_width)
+        left_section = left_section .. string.format(' %%#StatusLineMessage# %s', msg)
     end
-    return ''
+
+    return left_section
 end
 
 -- Build right section
@@ -358,16 +363,10 @@ function M.statusline()
     cache.last_update = current_time
 
     local left = build_left()
-    local center = build_center()
     local right = build_right()
 
-    -- If there's a message, show it in center, otherwise normal layout
-    local statusline
-    if cache.last_message ~= '' then
-        statusline = string.format('%s%%=%s%%=%s', left, center, right)
-    else
-        statusline = string.format('%s%%=%s', left, right)
-    end
+    -- Simple layout: left section + right section
+    local statusline = string.format('%s%%=%s', left, right)
 
     cache.last_statusline = statusline
     return statusline
