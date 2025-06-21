@@ -359,9 +359,8 @@ function M.statusline_inactive()
     return inactive_line
 end
 
--- Public API for showing messages
 function M.show_message(msg, timeout)
-    cache.message_timeout = timeout or 3000
+    cache.message_timeout = timeout or 1500
     set_message(msg)
 end
 
