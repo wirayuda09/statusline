@@ -24,14 +24,14 @@ local function get_colorscheme_colors()
         bg = 'StatusLine',
         fg = 'StatusLine',
         inactive = 'StatusLineNC',
-        
+
         -- Mode colors (using different highlight groups for variety)
         normal = 'Function',
         insert = 'String',
         visual = 'Type',
         replace = 'Error',
         command = 'Special',
-        
+
         -- Semantic colors
         git = 'Comment',
         error = 'Error',
@@ -41,9 +41,9 @@ local function get_colorscheme_colors()
         message = 'Comment',
         lsp_progress = 'Type'
     }
-    
+
     local scheme_colors = {}
-    
+
     -- Helper function to safely get highlight colors
     local function get_hl_color(hl_group, attr)
         local success, hl = pcall(vim.api.nvim_get_hl, 0, { name = hl_group })
@@ -53,7 +53,7 @@ local function get_colorscheme_colors()
         end
         return nil
     end
-    
+
     -- Extract colors from highlight groups
     for name, hl_group in pairs(hl_groups) do
         local color = get_hl_color(hl_group, 'fg')
@@ -61,13 +61,13 @@ local function get_colorscheme_colors()
             scheme_colors[name] = color
         end
     end
-    
+
     -- Try to get background color from StatusLine
     local bg_color = get_hl_color('StatusLine', 'bg')
     if bg_color then
         scheme_colors.bg = bg_color
     end
-    
+
     -- Fallback colors if colorscheme doesn't provide them
     local fallback_colors = {
         bg = '#1e1e2e',
@@ -86,22 +86,22 @@ local function get_colorscheme_colors()
         message = '#a6adc8',
         lsp_progress = '#f9e2af'
     }
-    
+
     -- Use scheme colors if available, otherwise fallback
     for name, fallback in pairs(fallback_colors) do
         colors[name] = scheme_colors[name] or fallback
     end
-    
+
     -- Ensure we have a background color for mode indicators
     if not colors.bg or colors.bg == '' then
         colors.bg = fallback_colors.bg
     end
-    
+
     -- Ensure we have a foreground color
     if not colors.fg or colors.fg == '' then
         colors.fg = fallback_colors.fg
     end
-    
+
     -- Debug: Log which colors were extracted (only in verbose mode)
     if vim.g.statusline_debug then
         print("Statusline colors extracted:")
@@ -155,7 +155,7 @@ local function setup_highlights()
     -- Refresh colors from active colorscheme
     get_colorscheme_colors()
     update_mode_mappings()
-    
+
     local highlights = {
         StatusLine = { bg = colors.bg, fg = colors.fg },
         StatusLineNC = { bg = colors.bg, fg = colors.inactive },
@@ -170,7 +170,11 @@ local function setup_highlights()
         StatusLineInfo = { bg = colors.bg, fg = colors.info },
         StatusLineHint = { bg = colors.bg, fg = colors.hint },
         StatusLineMessage = { bg = colors.bg, fg = colors.message, italic = true },
-        StatusLineLspProgress = { bg = colors.bg, fg = colors.lsp_progress, italic = true }
+        StatusLineLspProgress = { bg = colors.bg, fg = colors.lsp_progress, italic = true },
+        -- Tmux highlights
+        StatusLineTmuxActive = { bg = colors.normal, fg = colors.bg, bold = true },
+        StatusLineTmuxInactive = { bg = colors.bg, fg = colors.inactive },
+        StatusLineTmuxSep = { bg = colors.bg, fg = colors.inactive },
     }
 
     for name, opts in pairs(highlights) do
@@ -187,34 +191,7 @@ local function refresh_colors()
     end)
 end
 
--- Function to handle popular external colorschemes
-local function handle_external_colorscheme()
-    local colorscheme = vim.g.colors_name or ''
-    
-    -- List of popular external colorschemes that might need special handling
-    local external_colorschemes = {
-        'tokyonight', 'catppuccin', 'gruvbox', 'nord', 'dracula', 
-        'onedark', 'material', 'nightfox', 'dayfox', 'duskfox',
-        'rose-pine', 'kanagawa', 'everforest', 'sonokai', 'edge',
-        'monokai', 'molokai', 'zenburn', 'solarized', 'wombat'
-    }
-    
-    -- Check if current colorscheme is in the list
-    for _, name in ipairs(external_colorschemes) do
-        if colorscheme:lower():find(name:lower()) then
-            -- For external colorschemes, we might need to wait a bit for colors to load
-            vim.schedule(function()
-                vim.defer_fn(function()
-                    refresh_colors()
-                end, 100) -- Wait 100ms for colorscheme to fully load
-            end)
-            return true
-        end
-    end
-    
-    return false
-end
-
+-- Restore message capture functions
 local function set_message(msg)
     msg = M.clean_message(msg)
     if msg == cache.last_message then
@@ -311,7 +288,7 @@ local function get_file_info()
     local filename = vim.api.nvim_buf_get_name(buf)
 
     if filename == '' then
-        return '[No Name]'
+        return ''
     end
 
     filename = vim.fn.fnamemodify(filename, ':t')
@@ -400,7 +377,53 @@ local function get_position()
     return string.format('%d:%d %d%%%%', line, col, math.floor(line / total * 100))
 end
 
+-- Get tmux pane number (if inside tmux)
+local function get_tmux_pane_number()
+    local tmux_pane = os.getenv('TMUX_PANE')
+    if not tmux_pane then
+        return nil
+    end
+    -- Try to get tmux pane number using tmux command
+    local handle = io.popen('tmux display-message -p "#P" 2>/dev/null')
+    if handle then
+        local pane = handle:read('*a')
+        handle:close()
+        if pane and pane ~= '' then
+            return pane:gsub('\n', '')
+        end
+    end
+    return nil
+end
+
+-- Get tmux windows (tabs) for the current session, highlight active (better UI)
+local function get_tmux_windows_segment()
+    if not os.getenv('TMUX') then
+        return ''
+    end
+    local handle = io.popen([[tmux list-windows -F '#I:#{window_active}']])
+    if not handle then
+        return ''
+    end
+    local result = handle:read('*a')
+    handle:close()
+    if not result or result == '' then
+        return ''
+    end
+    local segments = {}
+    for line in result:gmatch('[^\n]+') do
+        local num, active = line:match('^(%d+):(%d)$')
+        if num and active then
+            local hl = (active == '1') and 'StatusLineTmuxActive' or 'StatusLineTmuxInactive'
+            table.insert(segments, string.format('%%#%s# %s ', hl, num))
+        end
+    end
+    -- Add separator between numbers
+    local sep = '%#StatusLineTmuxSep#│'
+    return table.concat(segments, sep)
+end
+
 local function build_left()
+    local tmux_tabs = get_tmux_windows_segment()
     local mode_name, mode_color = get_mode()
     local file_info = get_file_info()
     local git_branch = get_git_branch()
@@ -417,7 +440,11 @@ local function build_left()
         mode_hl = 'StatusLineModeCommand'
     end
 
-    local left_section = string.format('%%#%s# %s %%#StatusLine# %s', mode_hl, mode_name, file_info)
+    local left_section = ''
+    if tmux_tabs ~= '' then
+        left_section = tmux_tabs .. ' '
+    end
+    left_section = left_section .. string.format('%%#%s# %s %%#StatusLine# %s', mode_hl, mode_name, file_info)
 
     -- Add git branch right after file name
     if git_branch then
@@ -555,7 +582,7 @@ function M.setup(opts)
 
     -- Handle initial colorscheme if already loaded
     if vim.g.colors_name then
-        handle_external_colorscheme()
+        refresh_colors()
     end
 
     -- Set up LSP progress handler
@@ -631,11 +658,7 @@ function M.setup(opts)
     vim.api.nvim_create_autocmd('ColorScheme', {
         group = group,
         callback = function()
-            -- Try to handle external colorschemes first
-            if not handle_external_colorscheme() then
-                -- For built-in colorschemes, refresh immediately
-                refresh_colors()
-            end
+            refresh_colors()
         end
     })
 
