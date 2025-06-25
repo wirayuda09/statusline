@@ -79,7 +79,7 @@ local function get_colorscheme_colors()
         command = '#cba6f7',
         inactive = '#6c7086',
         git = '#fab387',
-        error = '#f38ba8',
+        error = '#ffffff',
         warn = '#fab387',
         info = '#89dceb',
         hint = '#94e2d5',
@@ -459,7 +459,7 @@ local function build_left()
     -- Add message right after LSP progress
     if cache.last_message ~= '' then
         local total_width = vim.o.columns or 80                                -- fallback width
-        local max_message_width = math.max(25, math.floor(total_width * 0.25)) -- minimum 20 chars
+        local max_message_width = math.max(20, math.floor(total_width * 0.20)) -- minimum 20 chars
         local msg = truncate(cache.last_message, max_message_width)
         left_section = left_section .. string.format(' %%#StatusLineMessage# %s', msg)
     end
@@ -495,6 +495,14 @@ local function build_right()
     return string.format('%s %s  %s', diag_str, filetype, position)
 end
 
+local augroup = vim.api.nvim_create_augroup
+vim.api.nvim_create_autocmd({ 'WinEnter', 'FocusGained', 'BufEnter' }, {
+    group = augroup("redraw", { clear = true }),
+    callback = function()
+        cache.last_update = 0
+        vim.cmd('redrawstatus')
+    end,
+})
 -- Main statusline function
 function M.statusline()
     local current_time = vim.loop.now()
