@@ -241,6 +241,8 @@ local function setup_message_capture()
         if msg and msg ~= '' then
             set_message(msg)
         end
+        -- Call original print to maintain message history
+        return _G._statusline_original_print(...)
     end
 
     -- Override echo function
@@ -257,9 +259,9 @@ local function setup_message_capture()
             local msg = table.concat(msg_parts, '')
             if msg and msg ~= '' and not msg:match('^%s*$') then
                 set_message(msg)
-                return -- Don't call original echo
             end
         end
+        -- Always call original echo to maintain message history
         return _G._statusline_original_echo(chunks, history, opts)
     end
 end
@@ -377,53 +379,7 @@ local function get_position()
     return string.format('%d:%d %d%%%%', line, col, math.floor(line / total * 100))
 end
 
--- Get tmux pane number (if inside tmux)
-local function get_tmux_pane_number()
-    local tmux_pane = os.getenv('TMUX_PANE')
-    if not tmux_pane then
-        return nil
-    end
-    -- Try to get tmux pane number using tmux command
-    local handle = io.popen('tmux display-message -p "#P" 2>/dev/null')
-    if handle then
-        local pane = handle:read('*a')
-        handle:close()
-        if pane and pane ~= '' then
-            return pane:gsub('\n', '')
-        end
-    end
-    return nil
-end
-
--- Get tmux windows (tabs) for the current session, highlight active (better UI)
-local function get_tmux_windows_segment()
-    if not os.getenv('TMUX') then
-        return ''
-    end
-    local handle = io.popen([[tmux list-windows -F '#I:#{window_active}']])
-    if not handle then
-        return ''
-    end
-    local result = handle:read('*a')
-    handle:close()
-    if not result or result == '' then
-        return ''
-    end
-    local segments = {}
-    for line in result:gmatch('[^\n]+') do
-        local num, active = line:match('^(%d+):(%d)$')
-        if num and active then
-            local hl = (active == '1') and 'StatusLineTmuxActive' or 'StatusLineTmuxInactive'
-            table.insert(segments, string.format('%%#%s# %s ', hl, num))
-        end
-    end
-    -- Add separator between numbers
-    local sep = '%#StatusLineTmuxSep#│'
-    return table.concat(segments, sep)
-end
-
 local function build_left()
-    local tmux_tabs = get_tmux_windows_segment()
     local mode_name, mode_color = get_mode()
     local file_info = get_file_info()
     local git_branch = get_git_branch()
@@ -441,9 +397,6 @@ local function build_left()
     end
 
     local left_section = ''
-    if tmux_tabs ~= '' then
-        left_section = tmux_tabs .. ' '
-    end
     left_section = left_section .. string.format('%%#%s# %s %%#StatusLine# %s', mode_hl, mode_name, file_info)
 
     -- Add git branch right after file name
@@ -459,7 +412,7 @@ local function build_left()
     -- Add message right after LSP progress
     if cache.last_message ~= '' then
         local total_width = vim.o.columns or 80                                -- fallback width
-        local max_message_width = math.max(20, math.floor(total_width * 0.20)) -- minimum 20 chars
+        local max_message_width = math.max(30, math.floor(total_width * 0.30)) -- minimum 20 chars
         local msg = truncate(cache.last_message, max_message_width)
         left_section = left_section .. string.format(' %%#StatusLineMessage# %s', msg)
     end
