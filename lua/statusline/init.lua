@@ -1,180 +1,221 @@
 local M = {}
 
--- Cache frequently accessed values
 local cache = {
-    mode_colors = {},
-    git_branch = nil,
-    git_timer = nil,
-    diagnostics = { error = 0, warn = 0, info = 0, hint = 0 },
+    -- Component caches with timestamps
+    mode = { value = '', time = 0, ttl = 50 },
+    file = { value = '', time = 0, ttl = 1000 },
+    git = { value = '', time = 0, ttl = 5000 },
+    diagnostics = { value = '', time = 0, ttl = 500 },
+    position = { value = '', time = 0, ttl = 100 },
+    lsp = { value = '', time = 0, ttl = 200 },
+
+    lsp_progress = {}, -- Add this line
+    -- Global cache
+    statusline = '',
     last_update = 0,
-    last_message = '',
+    update_threshold = 50, -- Minimum ms between updates
+
+    -- Timers
+    git_timer = nil,
     message_timer = nil,
+
+    -- Message system
+    message = '',
     message_timeout = 3000,
-    last_statusline = '',
-    original_cmdheight = vim.o.cmdheight
 }
 
--- Color definitions - will be populated from active colorscheme
-local colors = {}
+-- Modern color palette with semantic meanings
+local colors = {
+    -- Base colors
+    bg = '#1e1e2e',
+    fg = '#cdd6f4',
+    surface = '#313244',
+    overlay = '#6c7086',
 
--- Function to get colors from active colorscheme
-local function get_colorscheme_colors()
-    local hl_groups = {
-        -- Base colors
-        bg = 'StatusLine',
-        fg = 'StatusLine',
-        inactive = 'StatusLineNC',
+    -- Accent colors
+    blue = '#89b4fa',
+    green = '#a6e3a1',
+    yellow = '#f9e2af',
+    red = '#f38ba8',
+    purple = '#cba6f7',
+    pink = '#f5c2e7',
+    teal = '#94e2d5',
+    orange = '#fab387',
 
-        -- Mode colors (using different highlight groups for variety)
-        normal = 'Function',
-        insert = 'String',
-        visual = 'Type',
-        replace = 'Error',
-        command = 'Special',
+    -- Semantic colors
+    error = '#f38ba8',
+    warn = '#fab387',
+    info = '#89dceb',
+    hint = '#94e2d5',
 
-        -- Semantic colors
-        git = 'Comment',
-        error = 'Error',
-        warn = 'WarningMsg',
-        info = 'MoreMsg',
-        hint = 'Question',
-        message = 'Comment',
-        lsp_progress = 'Type'
-    }
+    -- Git colors
+    git_add = '#a6e3a1',
+    git_change = '#f9e2af',
+    git_delete = '#f38ba8',
+}
 
-    local scheme_colors = {}
+-- Modern icons with fallbacks
+local icons = {
+    -- File type icons
+    file = '󰈙',
+    folder = '󰉋',
+    modified = '●',
+    readonly = '󰌾',
 
-    -- Helper function to safely get highlight colors
-    local function get_hl_color(hl_group, attr)
-        local success, hl = pcall(vim.api.nvim_get_hl, 0, { name = hl_group })
-        if success and hl and hl[attr] then
-            -- Convert RGB to hex
+    -- Git icons
+    git_branch = '󰊢',
+    git_add = '󰐕',
+    git_change = '󰛿',
+    git_delete = '󰍶',
+
+    -- Diagnostic icons
+    error = '󰅚',
+    warn = '󰀪',
+    info = '󰋽',
+    hint = '󰌶',
+
+    -- Mode icons
+    normal = '󰊠',
+    insert = '󰏫',
+    visual = '󰈈',
+    command = '󰘳',
+    replace = '󰛔',
+
+    -- Separators
+    left_sep = '',
+    right_sep = '',
+    thin_left = '│',
+    thin_right = '│',
+
+    -- Position icons
+    line = '󰍒',
+    column = '󰗕',
+    percent = '󰏰',
+    lsp = '󰒋',
+    progress = '󰔟',
+}
+-- Add the LSP progress handler back
+local function setup_lsp_progress()
+    vim.lsp.handlers["$/progress"] = function(_, result, ctx)
+        local client = vim.lsp.get_client_by_id(ctx.client_id)
+        if not client or not result.value then return end
+
+        local token = result.token
+        local value = result.value
+
+        if value.kind == "begin" then
+            cache.lsp_progress[token] = {
+                client = client.name,
+                title = value.title or "",
+                message = value.message or "",
+                percentage = value.percentage or 0,
+            }
+        elseif value.kind == "report" then
+            if cache.lsp_progress[token] then
+                cache.lsp_progress[token].message = value.message or cache.lsp_progress[token].message
+                cache.lsp_progress[token].percentage = value.percentage or cache.lsp_progress[token].percentage
+            end
+        elseif value.kind == "end" then
+            cache.lsp_progress[token] = nil
+        end
+
+        -- Force LSP cache update
+        cache.lsp.time = 0
+        vim.schedule(function()
+            vim.cmd('redrawstatus')
+        end)
+    end
+end
+-- Dynamic color extraction from current colorscheme
+local function extract_colorscheme_colors()
+    local function get_hl_color(group, attr)
+        local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = group })
+        if ok and hl and hl[attr] then
             return string.format('#%06x', hl[attr])
         end
         return nil
     end
 
-    -- Extract colors from highlight groups
-    for name, hl_group in pairs(hl_groups) do
-        local color = get_hl_color(hl_group, 'fg')
-        if color then
-            scheme_colors[name] = color
-        end
-    end
+    -- Try to extract colors from common highlight groups
+    local extracted = {}
 
-    -- Try to get background color from StatusLine
-    local bg_color = get_hl_color('StatusLine', 'bg')
-    if bg_color then
-        scheme_colors.bg = bg_color
-    end
+    -- Base colors
+    extracted.bg = get_hl_color('StatusLine', 'bg') or colors.bg
+    extracted.fg = get_hl_color('StatusLine', 'fg') or colors.fg
+    extracted.surface = get_hl_color('Pmenu', 'bg') or colors.surface
 
-    -- Fallback colors if colorscheme doesn't provide them
-    local fallback_colors = {
-        bg = '#1e1e2e',
-        fg = '#cdd6f4',
-        normal = '#89b4fa',
-        insert = '#a6e3a1',
-        visual = '#f9e2af',
-        replace = '#f38ba8',
-        command = '#cba6f7',
-        inactive = '#6c7086',
-        git = '#fab387',
-        error = '#ffffff',
-        warn = '#fab387',
-        info = '#89dceb',
-        hint = '#94e2d5',
-        message = '#a6adc8',
-        lsp_progress = '#f9e2af'
-    }
+    -- Semantic colors
+    extracted.blue = get_hl_color('Function', 'fg') or colors.blue
+    extracted.green = get_hl_color('String', 'fg') or colors.green
+    extracted.yellow = get_hl_color('Type', 'fg') or colors.yellow
+    extracted.red = get_hl_color('Error', 'fg') or colors.red
+    extracted.purple = get_hl_color('Statement', 'fg') or colors.purple
 
-    -- Use scheme colors if available, otherwise fallback
-    for name, fallback in pairs(fallback_colors) do
-        colors[name] = scheme_colors[name] or fallback
-    end
-
-    -- Ensure we have a background color for mode indicators
-    if not colors.bg or colors.bg == '' then
-        colors.bg = fallback_colors.bg
-    end
-
-    -- Ensure we have a foreground color
-    if not colors.fg or colors.fg == '' then
-        colors.fg = fallback_colors.fg
-    end
-
-    -- Debug: Log which colors were extracted (only in verbose mode)
-    if vim.g.statusline_debug then
-        print("Statusline colors extracted:")
-        for name, color in pairs(colors) do
-            print(string.format("  %s: %s", name, color))
-        end
-    end
+    -- Merge with defaults
+    colors = vim.tbl_extend('force', colors, extracted)
 end
 
--- Mode mappings (will be updated with dynamic colors)
-local modes = {}
-
--- Update mode mappings with current colors
-local function update_mode_mappings()
-    modes = {
-        ['n'] = { 'NORMAL', colors.normal },
-        ['i'] = { 'INSERT', colors.insert },
-        ['v'] = { 'VISUAL', colors.visual },
-        ['V'] = { 'V-LINE', colors.visual },
-        ['c'] = { 'COMMAND', colors.command },
-        ['s'] = { 'SELECT', colors.visual },
-        ['S'] = { 'S-LINE', colors.visual },
-        [''] = { 'S-BLOCK', colors.visual },
-        ['R'] = { 'REPLACE', colors.replace },
-        ['r'] = { 'REPLACE', colors.replace },
-        ['t'] = { 'TERMINAL', colors.command }
-    }
-end
-
-function M.clean_message(msg)
-    if not msg then return '' end
-    msg = tostring(msg)
-    msg = msg
-        :gsub("[\226\128\147]", "-") -- replace en dash (–) or em dash (—)
-        :gsub("…", "...") -- replace ellipsis with 3 dots
-        :gsub("•", "-") -- replace bullet with dash
-        :gsub("↪", "->") -- arrow right
-        :gsub("[\194\244].", "") -- fallback: remove unprintable UTF-8 (optional)
-
-    return msg
-end
-
-local function truncate(msg, max_width)
-    if not msg or msg == '' then return '' end
-    if #msg <= max_width then return msg end
-    return msg:sub(1, max_width - 1) .. '…'
-end
-
--- Initialize highlight groups
+-- Modern highlight groups with gradients and effects
 local function setup_highlights()
-    -- Refresh colors from active colorscheme
-    get_colorscheme_colors()
-    update_mode_mappings()
+    extract_colorscheme_colors()
 
     local highlights = {
+        -- Base statusline
         StatusLine = { bg = colors.bg, fg = colors.fg },
-        StatusLineNC = { bg = colors.bg, fg = colors.inactive },
-        StatusLineModeNormal = { bg = colors.normal, fg = colors.bg, bold = true },
-        StatusLineModeInsert = { bg = colors.insert, fg = colors.bg, bold = true },
-        StatusLineModeVisual = { bg = colors.visual, fg = colors.bg, bold = true },
-        StatusLineModeReplace = { bg = colors.replace, fg = colors.bg, bold = true },
-        StatusLineModeCommand = { bg = colors.command, fg = colors.bg, bold = true },
-        StatusLineGit = { bg = colors.bg, fg = colors.git },
-        StatusLineError = { bg = colors.bg, fg = colors.error },
+        StatusLineNC = { bg = colors.bg, fg = colors.overlay },
+        StatusLineLSP = { bg = colors.bg, fg = colors.teal },
+        StatusLineProgress = { bg = colors.bg, fg = colors.purple, italic = true },
+
+        -- Modern mode indicators with background gradients
+        StatusLineModeNormal = {
+            bg = colors.blue,
+            fg = colors.bg,
+            bold = true
+        },
+        StatusLineModeInsert = {
+            bg = colors.green,
+            fg = colors.bg,
+            bold = true
+        },
+        StatusLineModeVisual = {
+            bg = colors.purple,
+            fg = colors.bg,
+            bold = true
+        },
+        StatusLineModeCommand = {
+            bg = colors.yellow,
+            fg = colors.bg,
+            bold = true
+        },
+        StatusLineModeReplace = {
+            bg = colors.red,
+            fg = colors.bg,
+            bold = true
+        },
+
+        -- Separator gradients
+        StatusLineSepLeft = { bg = colors.bg, fg = colors.blue },
+        StatusLineSepRight = { bg = colors.bg, fg = colors.surface },
+
+        -- Component highlights
+        StatusLineFile = { bg = colors.surface, fg = colors.fg, bold = true },
+        StatusLineGit = { bg = colors.bg, fg = colors.orange, italic = true },
+
+        -- Diagnostic highlights with modern styling
+        StatusLineError = { bg = colors.bg, fg = colors.error, bold = true },
         StatusLineWarn = { bg = colors.bg, fg = colors.warn },
         StatusLineInfo = { bg = colors.bg, fg = colors.info },
         StatusLineHint = { bg = colors.bg, fg = colors.hint },
-        StatusLineMessage = { bg = colors.bg, fg = colors.message, italic = true },
-        StatusLineLspProgress = { bg = colors.bg, fg = colors.lsp_progress, italic = true },
-        -- Tmux highlights
-        StatusLineTmuxActive = { bg = colors.normal, fg = colors.bg, bold = true },
-        StatusLineTmuxInactive = { bg = colors.bg, fg = colors.inactive },
-        StatusLineTmuxSep = { bg = colors.bg, fg = colors.inactive },
+
+        -- Position indicator
+        StatusLinePosition = { bg = colors.surface, fg = colors.fg },
+
+        -- Message system
+        StatusLineMessage = { bg = colors.bg, fg = colors.yellow, italic = true },
+
+        -- Special effects
+        StatusLineAccent = { bg = colors.bg, fg = colors.pink },
+        StatusLineSubtle = { bg = colors.bg, fg = colors.overlay },
     }
 
     for name, opts in pairs(highlights) do
@@ -182,470 +223,345 @@ local function setup_highlights()
     end
 end
 
--- Function to refresh colors when colorscheme changes
-local function refresh_colors()
-    setup_highlights()
-    cache.last_update = 0 -- Force statusline update
-    vim.schedule(function()
-        vim.cmd('redrawstatus')
+-- Performance-optimized cache getter
+local function get_cached(key, generator, force_update)
+    local now = vim.uv and vim.uv.now() or vim.loop.now()
+    local cache_entry = cache[key]
+
+    if not cache_entry then
+        cache[key] = { value = '', time = 0, ttl = 1000 }
+        cache_entry = cache[key]
+    end
+
+    if force_update or (now - cache_entry.time) > cache_entry.ttl then
+        local result = generator()
+        cache_entry.value = result or ''
+        cache_entry.time = now
+    end
+
+    return cache_entry.value
+end
+
+local function get_lsp_info()
+    return get_cached('lsp', function()
+        -- Only show progress if available, don't show client names
+        if next(cache.lsp_progress) then
+            local progress_parts = {}
+            for _, progress in pairs(cache.lsp_progress) do
+                local part = progress.title
+                if progress.percentage and progress.percentage > 0 then
+                    part = part .. string.format(' %d%%', progress.percentage)
+                end
+                table.insert(progress_parts, part)
+            end
+
+            if #progress_parts > 0 then
+                return string.format('%%#StatusLineProgress#%s %s',
+                    icons.progress, table.concat(progress_parts, ' '))
+            end
+        end
+
+        return ''
     end)
 end
 
--- Restore message capture functions
-local function set_message(msg)
-    msg = M.clean_message(msg)
-    if msg == cache.last_message then
-        return -- Avoid duplicate messages
-    end
 
-    cache.last_message = msg
-    cache.last_update = 0
 
-    -- Clear existing timer
+-- Modern mode detection with icons
+local function get_mode_info()
+    return get_cached('mode', function()
+        local mode = vim.api.nvim_get_mode().mode
+        local mode_map = {
+            ['n'] = { 'NORMAL', 'StatusLineModeNormal', icons.normal },
+            ['i'] = { 'INSERT', 'StatusLineModeInsert', icons.insert },
+            ['v'] = { 'VISUAL', 'StatusLineModeVisual', icons.visual },
+            ['V'] = { 'V-LINE', 'StatusLineModeVisual', icons.visual },
+            [''] = { 'V-BLOCK', 'StatusLineModeVisual', icons.visual },
+            ['c'] = { 'COMMAND', 'StatusLineModeCommand', icons.command },
+            ['R'] = { 'REPLACE', 'StatusLineModeReplace', icons.replace },
+            ['t'] = { 'TERMINAL', 'StatusLineModeCommand', icons.command },
+        }
+
+        local info = mode_map[mode] or { 'UNKNOWN', 'StatusLineModeNormal', icons.normal }
+        return string.format('%%#%s# %s %s %%#StatusLineSepLeft#%s',
+            info[2], info[3], info[1], icons.right_sep)
+    end)
+end
+
+-- Enhanced file info with modern styling
+local function get_file_info()
+    return get_cached('file', function()
+        local buf = vim.api.nvim_get_current_buf()
+        local filename = vim.api.nvim_buf_get_name(buf)
+
+        if filename == '' then
+            return string.format('%%#StatusLineFile# %s [No Name] %%#StatusLineSepRight#%s',
+                icons.file, icons.right_sep)
+        end
+
+        filename = vim.fn.fnamemodify(filename, ':t')
+        local modified = vim.bo[buf].modified and icons.modified or ''
+        local readonly = vim.bo[buf].readonly and icons.readonly or ''
+
+        return string.format('%%#StatusLineFile# %s %s %s%s %%#StatusLineSepRight#%s',
+            icons.file, filename, modified, readonly, icons.right_sep)
+    end)
+end
+
+-- Git integration with async updates
+local function get_git_info()
+    return get_cached('git', function()
+        if not cache.git_timer then
+            local timer = vim.uv and vim.uv.new_timer() or vim.loop.new_timer()
+            cache.git_timer = timer
+            timer:start(0, 5000, vim.schedule_wrap(function()
+                -- Use job for git command
+                local job_id = vim.fn.jobstart({ 'git', 'branch', '--show-current' }, {
+                    cwd = vim.fn.getcwd(),
+                    stdout_buffered = true,
+                    on_stdout = function(_, data)
+                        if data and data[1] and data[1] ~= '' then
+                            local branch = vim.trim(data[1])
+                            cache.git.value = string.format('%%#StatusLineGit# %s %s',
+                                icons.git_branch, branch)
+                            cache.git.time = vim.uv and vim.uv.now() or vim.loop.now()
+                            vim.schedule(function()
+                                vim.cmd('redrawstatus')
+                            end)
+                        end
+                    end,
+                    on_exit = function(_, code)
+                        if code ~= 0 then
+                            cache.git.value = ''
+                        end
+                    end
+                })
+
+                -- Timeout the job after 1 second
+                vim.defer_fn(function()
+                    if job_id > 0 then
+                        vim.fn.jobstop(job_id)
+                    end
+                end, 1000)
+            end))
+        end
+        return cache.git.value or ''
+    end)
+end
+
+-- Modern diagnostic display
+local function get_diagnostics()
+    return get_cached('diagnostics', function()
+        local diagnostics = vim.diagnostic.get(0)
+        local counts = { error = 0, warn = 0, info = 0, hint = 0 }
+
+        for _, diagnostic in ipairs(diagnostics) do
+            local severity = diagnostic.severity
+            if severity == vim.diagnostic.severity.ERROR then
+                counts.error = counts.error + 1
+            elseif severity == vim.diagnostic.severity.WARN then
+                counts.warn = counts.warn + 1
+            elseif severity == vim.diagnostic.severity.INFO then
+                counts.info = counts.info + 1
+            elseif severity == vim.diagnostic.severity.HINT then
+                counts.hint = counts.hint + 1
+            end
+        end
+
+        local parts = {}
+        if counts.error > 0 then
+            table.insert(parts, string.format('%%#StatusLineError#%s %d', icons.error, counts.error))
+        end
+        if counts.warn > 0 then
+            table.insert(parts, string.format('%%#StatusLineWarn#%s %d', icons.warn, counts.warn))
+        end
+        if counts.info > 0 then
+            table.insert(parts, string.format('%%#StatusLineInfo#%s %d', icons.info, counts.info))
+        end
+        if counts.hint > 0 then
+            table.insert(parts, string.format('%%#StatusLineHint#%s %d', icons.hint, counts.hint))
+        end
+
+        return table.concat(parts, ' ')
+    end)
+end
+
+-- Enhanced position indicator
+local function get_position()
+    return get_cached('position', function()
+        local line = vim.fn.line('.')
+        local col = vim.fn.col('.')
+        local total = vim.fn.line('$')
+        local percent = math.floor(line / total * 100)
+
+        return string.format('%%#StatusLineSepLeft#%s%%#StatusLinePosition# %s %d:%d %s %d%%%% ',
+            icons.left_sep, icons.line, line, col, icons.percent, percent)
+    end)
+end
+
+-- Message system with auto-clear
+local function set_message(msg, timeout)
+    timeout = timeout or cache.message_timeout
+    cache.message = msg or ''
+
     if cache.message_timer then
         cache.message_timer:close()
         cache.message_timer = nil
     end
 
-    -- Use vim.schedule to avoid circular dependency
-    vim.schedule(function()
-        vim.cmd('redrawstatus')
-    end)
-
-    -- Set timer to clear message
-    if msg ~= '' then
-        cache.message_timer = vim.loop.new_timer()
-        cache.message_timer:start(cache.message_timeout, 0, vim.schedule_wrap(function()
-            cache.last_message = ''
-            cache.last_update = 0
-            vim.schedule(function()
-                vim.cmd('redrawstatus')
-            end)
+    if cache.message ~= '' then
+        local timer = vim.uv and vim.uv.new_timer() or vim.loop.new_timer()
+        cache.message_timer = timer
+        timer:start(timeout, 0, vim.schedule_wrap(function()
+            cache.message = ''
+            vim.cmd('redrawstatus')
             if cache.message_timer then
                 cache.message_timer:close()
                 cache.message_timer = nil
             end
         end))
     end
+
+    vim.cmd('redrawstatus')
 end
 
-local function setup_message_capture()
-    -- Store original functions
-    _G._statusline_original_print = _G.print
-    _G._statusline_original_echo = vim.api.nvim_echo
-
-    -- Override print function
-    _G.print = function(...)
-        local args = { ... }
-        local msg = table.concat(vim.tbl_map(tostring, args), '\t')
-        if msg and msg ~= '' then
-            set_message(msg)
-        end
-        -- Call original print to maintain message history
-        return _G._statusline_original_print(...)
-    end
-
-    -- Override echo function
-    vim.api.nvim_echo = function(chunks, history, opts)
-        if chunks and #chunks > 0 then
-            local msg_parts = {}
-            for _, chunk in ipairs(chunks) do
-                if type(chunk) == 'table' and chunk[1] then
-                    table.insert(msg_parts, chunk[1])
-                elseif type(chunk) == 'string' then
-                    table.insert(msg_parts, chunk)
-                end
-            end
-            local msg = table.concat(msg_parts, '')
-            if msg and msg ~= '' and not msg:match('^%s*$') then
-                set_message(msg)
-            end
-        end
-        -- Always call original echo to maintain message history
-        return _G._statusline_original_echo(chunks, history, opts)
-    end
-end
-
-local function restore_message_capture()
-    if _G._statusline_original_print then
-        _G.print = _G._statusline_original_print
-        _G._statusline_original_print = nil
-    end
-    if _G._statusline_original_echo then
-        vim.api.nvim_echo = _G._statusline_original_echo
-        _G._statusline_original_echo = nil
-    end
-end
-
--- Get current mode
-local function get_mode()
-    local mode = vim.api.nvim_get_mode().mode
-    local mode_info = modes[mode] or { 'UNKNOWN', colors.fg }
-    return mode_info[1], mode_info[2]
-end
-
--- Get file info
-local function get_file_info()
-    local buf = vim.api.nvim_get_current_buf()
-    local filename = vim.api.nvim_buf_get_name(buf)
-
-    if filename == '' then
-        return ''
-    end
-
-    filename = vim.fn.fnamemodify(filename, ':t')
-
-    -- Add modified indicator
-    if vim.api.nvim_buf_get_option(buf, 'modified') then
-        filename = filename .. ' ●'
-    end
-
-    -- Add readonly indicator
-    if vim.api.nvim_buf_get_option(buf, 'readonly') then
-        filename = filename .. ' '
-    end
-
-    return filename
-end
-
-local function get_git_branch()
-    if cache.git_timer and not cache.git_timer:is_closing() then
-        return cache.git_branch
-    end
-
-    cache.git_timer = vim.loop.new_timer()
-    cache.git_timer:start(0, 5000, vim.schedule_wrap(function()
-        local handle = io.popen('git branch --show-current 2>/dev/null')
-        if handle then
-            local branch = handle:read('*a'):gsub('\n', '')
-            handle:close()
-            cache.git_branch = branch ~= '' and branch or nil
-        end
-    end))
-
-    return cache.git_branch
-end
-
--- Get LSP progress
-local function get_lsp_progress()
-    if not _G.lsp_progress then
-        return ''
-    end
-
-    local progress_parts = {}
-    for _, progress in pairs(_G.lsp_progress) do
-        local part = string.format("[%s] %s", progress.client, progress.title)
-        if progress.percentage > 0 then
-            part = part .. string.format(" (%d%%)", progress.percentage)
-        end
-        if progress.message and progress.message ~= "" then
-            part = part .. " " .. progress.message
-        end
-        table.insert(progress_parts, part)
-    end
-
-    local progress_str = table.concat(progress_parts, " | ")
-    if progress_str ~= "" then
-        return string.format('%%#StatusLineLspProgress# %s', progress_str)
-    end
-    return ''
-end
-
-local function get_diagnostics()
-    local diagnostics = vim.diagnostic.get(0)
-    local counts = { error = 0, warn = 0, info = 0, hint = 0 }
-
-    for _, diagnostic in ipairs(diagnostics) do
-        local severity = diagnostic.severity
-        if severity == vim.diagnostic.severity.ERROR then
-            counts.error = counts.error + 1
-        elseif severity == vim.diagnostic.severity.WARN then
-            counts.warn = counts.warn + 1
-        elseif severity == vim.diagnostic.severity.INFO then
-            counts.info = counts.info + 1
-        elseif severity == vim.diagnostic.severity.HINT then
-            counts.hint = counts.hint + 1
-        end
-    end
-
-    cache.diagnostics = counts
-    return counts
-end
-
-local function get_position()
-    local line = vim.fn.line('.')
-    local col = vim.fn.col('.')
-    local total = vim.fn.line('$')
-    return string.format('%d:%d %d%%%%', line, col, math.floor(line / total * 100))
-end
-
-local function build_left()
-    local mode_name, mode_color = get_mode()
-    local file_info = get_file_info()
-    local git_branch = get_git_branch()
-    local lsp_progress = get_lsp_progress()
-
-    local mode_hl = 'StatusLineModeNormal'
-    if mode_color == colors.insert then
-        mode_hl = 'StatusLineModeInsert'
-    elseif mode_color == colors.visual then
-        mode_hl = 'StatusLineModeVisual'
-    elseif mode_color == colors.replace then
-        mode_hl = 'StatusLineModeReplace'
-    elseif mode_color == colors.command then
-        mode_hl = 'StatusLineModeCommand'
-    end
-
-    local left_section = ''
-    left_section = left_section .. string.format('%%#%s# %s %%#StatusLine# %s', mode_hl, mode_name, file_info)
-
-    -- Add git branch right after file name
-    if git_branch then
-        left_section = left_section .. string.format(' %%#StatusLineGit# %s', git_branch)
-    end
-
-    -- Add LSP progress
-    if lsp_progress ~= '' then
-        left_section = left_section .. ' ' .. lsp_progress
-    end
-
-    -- Add message right after LSP progress
-    if cache.last_message ~= '' then
-        local total_width = vim.o.columns or 80                                -- fallback width
-        local max_message_width = math.max(30, math.floor(total_width * 0.30)) -- minimum 20 chars
-        local msg = truncate(cache.last_message, max_message_width)
-        left_section = left_section .. string.format(' %%#StatusLineMessage# %s', msg)
-    end
-
-    return left_section
-end
-
--- Build right section (with diagnostic symbols)
-local function build_right()
-    local diagnostics = get_diagnostics()
-    local position = get_position()
-    local filetype = vim.bo.filetype ~= '' and vim.bo.filetype or 'text'
-
-    local diag_parts = {}
-    if diagnostics.error > 0 then
-        table.insert(diag_parts, string.format('%%#StatusLineError#✘ %d', diagnostics.error))
-    end
-    if diagnostics.warn > 0 then
-        table.insert(diag_parts, string.format('%%#StatusLineWarn#⚠ %d', diagnostics.warn))
-    end
-    if diagnostics.info > 0 then
-        table.insert(diag_parts, string.format('%%#StatusLineInfo#ℹ %d', diagnostics.info))
-    end
-    if diagnostics.hint > 0 then
-        table.insert(diag_parts, string.format('%%#StatusLineHint#H %d', diagnostics.hint))
-    end
-
-    local diag_str = table.concat(diag_parts, ' ')
-    if diag_str ~= '' then
-        diag_str = diag_str .. ' %#StatusLine#'
-    end
-
-    return string.format('%s %s  %s', diag_str, filetype, position)
-end
-
-local augroup = vim.api.nvim_create_augroup
-vim.api.nvim_create_autocmd({ 'WinEnter', 'FocusGained', 'BufEnter' }, {
-    group = augroup("redraw", { clear = true }),
-    callback = function()
-        cache.last_update = 0
-        vim.cmd('redrawstatus')
-    end,
-})
--- Main statusline function
+-- Main statusline builder with smart layout
 function M.statusline()
-    local current_time = vim.loop.now()
+    local now = vim.uv and vim.uv.now() or vim.loop.now()
 
-    -- Throttle updates for performance
-    if current_time - cache.last_update < 100 then
-        return cache.last_statusline or ''
+    -- Performance throttling
+    if now - cache.last_update < cache.update_threshold then
+        return cache.statusline
     end
 
-    cache.last_update = current_time
+    cache.last_update = now
 
-    local left = build_left()
-    local right = build_right()
+    -- Build components (removed LSP info)
+    local mode = get_mode_info() or ''
+    local file = get_file_info() or ''
+    local git = get_git_info() or ''
+    local diagnostics = get_diagnostics() or ''
+    local position = get_position() or ''
+    local lsp = get_lsp_info() or ''
 
-    -- Simple layout: left section + right section
-    local statusline = string.format('%s%%=%s', left, right)
+    -- Message display
+    local message = ''
+    if cache.message ~= '' then
+        local max_width = math.floor(vim.o.columns * 0.3)
+        local truncated = #cache.message > max_width and
+            cache.message:sub(1, max_width - 1) .. '…' or cache.message
+        message = string.format(' %%#StatusLineMessage#💬 %s', truncated)
+    end
 
-    cache.last_statusline = statusline
-    return statusline
+    -- Smart layout based on available width
+    local left = mode .. file .. git .. lsp .. message -- Include lsp here
+    local right = diagnostics .. position              -- Build final statusline
+    cache.statusline = string.format('%s%%=%s', left, right)
+
+    return cache.statusline
 end
 
--- Inactive statusline
+-- Minimalist inactive statusline
 function M.statusline_inactive()
-    local filename = get_file_info()
-    local git_branch = get_git_branch()
+    local filename = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ':t')
+    if filename == '' then filename = '[No Name]' end
 
-    local inactive_line = string.format('%%#StatusLineNC# %s', filename)
-
-    -- Show git branch in inactive windows too, but dimmed
-    if git_branch then
-        inactive_line = inactive_line .. string.format('  %s', git_branch)
-    end
-
-    return inactive_line
+    return string.format('%%#StatusLineNC# %s %s', icons.file, filename)
 end
 
+-- Public API
 function M.show_message(msg, timeout)
-    cache.message_timeout = timeout or 1500
-    set_message(msg)
+    set_message(msg, timeout)
 end
 
-function M.silent_write()
-    local filename = vim.fn.expand('%:t')
-    local success, err = pcall(vim.cmd, 'silent! write')
-
-    if success then
-        local lines_after = vim.fn.line('$')
-        local bytes = vim.fn.getfsize(vim.fn.expand('%'))
-        M.show_message(string.format('"%s" %dL, %dB written', filename, lines_after, bytes))
-    else
-        M.show_message('Write failed: ' .. (err or 'unknown error'))
-    end
-end
-
--- Public function to manually refresh colors
 function M.refresh_colors()
-    refresh_colors()
+    setup_highlights()
+    -- Force all cache refresh
+    for key in pairs(cache) do
+        if type(cache[key]) == 'table' and cache[key].time then
+            cache[key].time = 0
+        end
+    end
+    vim.cmd('redrawstatus')
 end
 
--- Public function to handle colorscheme plugin loading
-function M.handle_colorscheme_loaded()
-    -- Wait a bit for the colorscheme to fully load
-    vim.schedule(function()
-        vim.defer_fn(function()
-            refresh_colors()
-        end, 200) -- Wait 200ms for colorscheme to fully load
-    end)
-end
-
+-- Setup function
 function M.setup(opts)
     opts = opts or {}
 
-    -- Override default colors if provided
+    -- Apply user customizations
     if opts.colors then
         colors = vim.tbl_extend('force', colors, opts.colors)
     end
 
-    -- Override message timeout if provided
+    if opts.icons then
+        icons = vim.tbl_extend('force', icons, opts.icons)
+    end
+
     if opts.message_timeout then
         cache.message_timeout = opts.message_timeout
     end
 
+    if opts.update_threshold then
+        cache.update_threshold = opts.update_threshold
+    end
+
+    -- Initialize
     setup_highlights()
-    setup_message_capture()
+    setup_lsp_progress()
 
-    -- Handle initial colorscheme if already loaded
-    if vim.g.colors_name then
-        refresh_colors()
-    end
-
-    -- Set up LSP progress handler
-    _G.lsp_progress = {}
-    vim.lsp.handlers["$/progress"] = function(_, result, ctx)
-        local client_id = ctx.client_id
-        local client = vim.lsp.get_client_by_id(client_id)
-        local value = result.value
-        if not value or not client then
-            return
-        end
-
-        local token = result.token
-        local client_name = client.name
-
-        if value.kind == "begin" then
-            _G.lsp_progress[token] = {
-                client = client_name,
-                title = value.title or "",
-                message = value.message or "",
-                percentage = value.percentage or 0,
-            }
-        elseif value.kind == "report" then
-            if _G.lsp_progress[token] then
-                _G.lsp_progress[token].message = value.message or _G.lsp_progress[token].message
-                _G.lsp_progress[token].percentage = value.percentage or _G.lsp_progress[token].percentage
-            end
-        elseif value.kind == "end" then
-            _G.lsp_progress[token] = nil
-        end
-
-        cache.last_update = 0 -- Force statusline update
-        vim.schedule(function()
-            vim.cmd("redrawstatus")
-        end)
-    end
-
-    -- Set cmdheight to 0 and disable various message options
-    cache.original_cmdheight = vim.o.cmdheight
+    -- Set statusline with proper module reference
+    local module_name = debug.getinfo(1, 'S').source:match('@.*lua/(.*)%.lua$') or 'statusline'
+    vim.o.statusline = string.format('%%{%%v:lua.require("%s").statusline()%%}', module_name)
     vim.o.cmdheight = 0
-    vim.o.shortmess = vim.o.shortmess .. 'F' -- Don't show file info when editing
 
-    -- Set statusline
-    vim.o.statusline = '%{%v:lua.require("statusline").statusline()%}'
+    -- Auto commands
+    local group = vim.api.nvim_create_augroup('ModernStatusLine', { clear = true })
 
-    -- Set up autocommands for inactive windows
-    local group = vim.api.nvim_create_augroup('StatusLine', { clear = true })
-
+    -- Window focus management
     vim.api.nvim_create_autocmd({ 'WinEnter', 'BufEnter' }, {
         group = group,
         callback = function()
-            vim.wo.statusline = '%{%v:lua.require("statusline").statusline()%}'
+            vim.wo.statusline = string.format('%%{%%v:lua.require("%s").statusline()%%}', module_name)
         end
     })
 
     vim.api.nvim_create_autocmd({ 'WinLeave', 'BufLeave' }, {
         group = group,
         callback = function()
-            vim.wo.statusline = '%{%v:lua.require("statusline").statusline_inactive()%}'
+            vim.wo.statusline = string.format('%%{%%v:lua.require("%s").statusline_inactive()%%}', module_name)
         end
     })
 
-    -- Refresh on diagnostics change
-    vim.api.nvim_create_autocmd('DiagnosticChanged', {
+    -- Smart refresh triggers
+    vim.api.nvim_create_autocmd({ 'DiagnosticChanged' }, {
         group = group,
         callback = function()
-            cache.last_update = 0
+            cache.diagnostics.time = 0
             vim.cmd('redrawstatus')
         end
     })
 
-    -- Refresh colors when colorscheme changes
+    -- Colorscheme changes
     vim.api.nvim_create_autocmd('ColorScheme', {
         group = group,
         callback = function()
-            refresh_colors()
+            vim.defer_fn(M.refresh_colors, 100)
         end
     })
 
-    -- Handle colorscheme plugins that use User events
-    vim.api.nvim_create_autocmd('User', {
+    -- Performance optimization
+    vim.api.nvim_create_autocmd({ 'CursorMoved', 'CursorMovedI' }, {
         group = group,
-        pattern = { 'ColorScheme', 'Colorscheme', 'ThemeChanged' },
         callback = function()
-            M.handle_colorscheme_loaded()
+            cache.position.time = 0
         end
     })
 
-    -- Override write command to prevent default message
-    vim.api.nvim_create_user_command('W', M.silent_write, {})
-    vim.keymap.set('n', '<C-s>', M.silent_write, { desc = 'Write file silently', silent = true })
-
-    -- Cleanup on exit
+    -- Cleanup
     vim.api.nvim_create_autocmd('VimLeavePre', {
         group = group,
         callback = function()
-            restore_message_capture()
-            vim.o.cmdheight = cache.original_cmdheight
-
-            -- Clear LSP progress
-            _G.lsp_progress = {}
-
             if cache.git_timer and not cache.git_timer:is_closing() then
                 cache.git_timer:close()
             end
@@ -654,6 +570,11 @@ function M.setup(opts)
             end
         end
     })
+
+    -- Show welcome message
+    vim.defer_fn(function()
+        M.show_message('󰄀 Modern statusline loaded!', 2000)
+    end, 500)
 end
 
 return M
