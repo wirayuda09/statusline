@@ -9,7 +9,7 @@ local cache = {
     position = { value = '', time = 0, ttl = 100 },
     lsp = { value = '', time = 0, ttl = 200 },
 
-    lsp_progress = {}, -- Add this line
+    lsp_progress = {},
     -- Global cache
     statusline = '',
     last_update = 0,
@@ -24,7 +24,7 @@ local cache = {
     message_timeout = 3000,
 }
 
--- Modern color palette with semantic meanings
+-- Default color palette (will be overridden by colorscheme extraction)
 local colors = {
     -- Base colors
     bg = '#1e1e2e',
@@ -94,7 +94,224 @@ local icons = {
     lsp = '󰒋',
     progress = '󰔟',
 }
--- Add the LSP progress handler back
+
+-- Enhanced dynamic color extraction from current colorscheme
+local function extract_colorscheme_colors()
+    local function get_hl_color(group, attr)
+        local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = group })
+        if ok and hl and hl[attr] then
+            return string.format('#%06x', hl[attr])
+        end
+        return nil
+    end
+
+    -- Get base colors from StatusLine groups first
+    local statusline_bg = get_hl_color('StatusLine', 'bg')
+    local statusline_fg = get_hl_color('StatusLine', 'fg')
+    local normal_bg = get_hl_color('Normal', 'bg')
+    local normal_fg = get_hl_color('Normal', 'fg')
+
+    -- Extract colors with better fallback chain
+    local extracted = {}
+
+    -- Base colors - use StatusLine colors if available, otherwise Normal
+    extracted.bg = statusline_bg or normal_bg or colors.bg
+    extracted.fg = statusline_fg or normal_fg or colors.fg
+    
+    -- Surface color - try multiple highlight groups
+    extracted.surface = get_hl_color('Pmenu', 'bg') or 
+                       get_hl_color('CursorLine', 'bg') or 
+                       get_hl_color('Visual', 'bg') or
+                       colors.surface
+
+    -- Overlay color for subtle text
+    extracted.overlay = get_hl_color('Comment', 'fg') or 
+                       get_hl_color('NonText', 'fg') or 
+                       colors.overlay
+
+    -- Semantic colors with better fallbacks
+    extracted.blue = get_hl_color('Function', 'fg') or 
+                    get_hl_color('Identifier', 'fg') or 
+                    get_hl_color('Type', 'fg') or 
+                    colors.blue
+
+    extracted.green = get_hl_color('String', 'fg') or 
+                     get_hl_color('Character', 'fg') or 
+                     colors.green
+
+    extracted.yellow = get_hl_color('Number', 'fg') or 
+                      get_hl_color('Constant', 'fg') or 
+                      get_hl_color('WarningMsg', 'fg') or 
+                      colors.yellow
+
+    extracted.red = get_hl_color('ErrorMsg', 'fg') or 
+                   get_hl_color('Error', 'fg') or 
+                   get_hl_color('DiagnosticError', 'fg') or 
+                   colors.red
+
+    extracted.purple = get_hl_color('Statement', 'fg') or 
+                      get_hl_color('Keyword', 'fg') or 
+                      get_hl_color('PreProc', 'fg') or 
+                      colors.purple
+
+    extracted.orange = get_hl_color('Special', 'fg') or 
+                      get_hl_color('SpecialKey', 'fg') or 
+                      colors.orange
+
+    extracted.teal = get_hl_color('Operator', 'fg') or 
+                    get_hl_color('Delimiter', 'fg') or 
+                    colors.teal
+
+    extracted.pink = get_hl_color('Label', 'fg') or 
+                    get_hl_color('Tag', 'fg') or 
+                    colors.pink
+
+    -- Diagnostic colors
+    extracted.error = get_hl_color('DiagnosticError', 'fg') or 
+                     get_hl_color('ErrorMsg', 'fg') or 
+                     extracted.red
+
+    extracted.warn = get_hl_color('DiagnosticWarn', 'fg') or 
+                    get_hl_color('WarningMsg', 'fg') or 
+                    extracted.yellow
+
+    extracted.info = get_hl_color('DiagnosticInfo', 'fg') or 
+                    get_hl_color('MoreMsg', 'fg') or 
+                    extracted.blue
+
+    extracted.hint = get_hl_color('DiagnosticHint', 'fg') or 
+                    get_hl_color('Question', 'fg') or 
+                    extracted.teal
+
+    -- Git colors
+    extracted.git_add = get_hl_color('DiffAdd', 'fg') or 
+                       get_hl_color('GitSignsAdd', 'fg') or 
+                       extracted.green
+
+    extracted.git_change = get_hl_color('DiffChange', 'fg') or 
+                          get_hl_color('GitSignsChange', 'fg') or 
+                          extracted.yellow
+
+    extracted.git_delete = get_hl_color('DiffDelete', 'fg') or 
+                          get_hl_color('GitSignsDelete', 'fg') or 
+                          extracted.red
+
+    -- Merge with defaults, giving priority to extracted colors
+    colors = vim.tbl_extend('force', colors, extracted)
+end
+
+-- Enhanced highlight setup with better contrast handling
+local function setup_highlights()
+    extract_colorscheme_colors()
+
+    -- Helper function to ensure good contrast
+    local function ensure_contrast(fg, bg)
+        -- This is a simple approach - you could implement more sophisticated contrast checking
+        if fg == bg then
+            return colors.fg -- fallback to default foreground
+        end
+        return fg
+    end
+
+    local highlights = {
+        -- Base statusline - use extracted colors
+        StatusLine = { bg = colors.bg, fg = colors.fg },
+        StatusLineNC = { bg = colors.bg, fg = colors.overlay },
+        StatusLineLSP = { bg = colors.bg, fg = colors.teal },
+        StatusLineProgress = { bg = colors.bg, fg = colors.purple, italic = true },
+
+        -- Mode indicators with better contrast
+        StatusLineModeNormal = {
+            bg = colors.blue,
+            fg = colors.bg,
+            bold = true
+        },
+        StatusLineModeInsert = {
+            bg = colors.green,
+            fg = colors.bg,
+            bold = true
+        },
+        StatusLineModeVisual = {
+            bg = colors.purple,
+            fg = colors.bg,
+            bold = true
+        },
+        StatusLineModeCommand = {
+            bg = colors.yellow,
+            fg = colors.bg,
+            bold = true
+        },
+        StatusLineModeReplace = {
+            bg = colors.red,
+            fg = colors.bg,
+            bold = true
+        },
+
+        -- Separators using extracted colors
+        StatusLineSepLeft = { bg = colors.bg, fg = colors.surface },
+        StatusLineSepRight = { bg = colors.bg, fg = colors.surface },
+
+        -- Component highlights
+        StatusLineFile = { 
+            bg = colors.surface, 
+            fg = ensure_contrast(colors.fg, colors.surface), 
+            bold = true 
+        },
+        StatusLineGit = { 
+            bg = colors.bg, 
+            fg = colors.orange, 
+            italic = true 
+        },
+
+        -- Diagnostic highlights using extracted colors
+        StatusLineError = { 
+            bg = colors.bg, 
+            fg = colors.error, 
+            bold = true 
+        },
+        StatusLineWarn = { 
+            bg = colors.bg, 
+            fg = colors.warn 
+        },
+        StatusLineInfo = { 
+            bg = colors.bg, 
+            fg = colors.info 
+        },
+        StatusLineHint = { 
+            bg = colors.bg, 
+            fg = colors.hint 
+        },
+
+        -- Position indicator
+        StatusLinePosition = { 
+            bg = colors.surface, 
+            fg = ensure_contrast(colors.fg, colors.surface)
+        },
+
+        -- Message system
+        StatusLineMessage = { 
+            bg = colors.bg, 
+            fg = colors.yellow, 
+            italic = true 
+        },
+
+        -- Special effects
+        StatusLineAccent = { 
+            bg = colors.bg, 
+            fg = colors.pink 
+        },
+        StatusLineSubtle = { 
+            bg = colors.bg, 
+            fg = colors.overlay 
+        },
+    }
+
+    for name, opts in pairs(highlights) do
+        vim.api.nvim_set_hl(0, name, opts)
+    end
+end
+
+-- Add the LSP progress handler
 local function setup_lsp_progress()
     vim.lsp.handlers["$/progress"] = function(_, result, ctx)
         local client = vim.lsp.get_client_by_id(ctx.client_id)
@@ -124,102 +341,6 @@ local function setup_lsp_progress()
         vim.schedule(function()
             vim.cmd('redrawstatus')
         end)
-    end
-end
--- Dynamic color extraction from current colorscheme
-local function extract_colorscheme_colors()
-    local function get_hl_color(group, attr)
-        local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = group })
-        if ok and hl and hl[attr] then
-            return string.format('#%06x', hl[attr])
-        end
-        return nil
-    end
-
-    -- Try to extract colors from common highlight groups
-    local extracted = {}
-
-    -- Base colors
-    extracted.bg = get_hl_color('StatusLine', 'bg') or colors.bg
-    extracted.fg = get_hl_color('StatusLine', 'fg') or colors.fg
-    extracted.surface = get_hl_color('Pmenu', 'bg') or colors.surface
-
-    -- Semantic colors
-    extracted.blue = get_hl_color('Function', 'fg') or colors.blue
-    extracted.green = get_hl_color('String', 'fg') or colors.green
-    extracted.yellow = get_hl_color('Type', 'fg') or colors.yellow
-    extracted.red = get_hl_color('Error', 'fg') or colors.red
-    extracted.purple = get_hl_color('Statement', 'fg') or colors.purple
-
-    -- Merge with defaults
-    colors = vim.tbl_extend('force', colors, extracted)
-end
-
--- Modern highlight groups with gradients and effects
-local function setup_highlights()
-    extract_colorscheme_colors()
-
-    local highlights = {
-        -- Base statusline
-        StatusLine = { bg = colors.bg, fg = colors.fg },
-        StatusLineNC = { bg = colors.bg, fg = colors.overlay },
-        StatusLineLSP = { bg = colors.bg, fg = colors.teal },
-        StatusLineProgress = { bg = colors.bg, fg = colors.purple, italic = true },
-
-        -- Modern mode indicators with background gradients
-        StatusLineModeNormal = {
-            bg = colors.blue,
-            fg = colors.bg,
-            bold = true
-        },
-        StatusLineModeInsert = {
-            bg = colors.green,
-            fg = colors.bg,
-            bold = true
-        },
-        StatusLineModeVisual = {
-            bg = colors.purple,
-            fg = colors.bg,
-            bold = true
-        },
-        StatusLineModeCommand = {
-            bg = colors.yellow,
-            fg = colors.bg,
-            bold = true
-        },
-        StatusLineModeReplace = {
-            bg = colors.red,
-            fg = colors.bg,
-            bold = true
-        },
-
-        -- Separator gradients
-        StatusLineSepLeft = { bg = colors.bg, fg = colors.blue },
-        StatusLineSepRight = { bg = colors.bg, fg = colors.surface },
-
-        -- Component highlights
-        StatusLineFile = { bg = colors.surface, fg = colors.fg, bold = true },
-        StatusLineGit = { bg = colors.bg, fg = colors.orange, italic = true },
-
-        -- Diagnostic highlights with modern styling
-        StatusLineError = { bg = colors.bg, fg = colors.error, bold = true },
-        StatusLineWarn = { bg = colors.bg, fg = colors.warn },
-        StatusLineInfo = { bg = colors.bg, fg = colors.info },
-        StatusLineHint = { bg = colors.bg, fg = colors.hint },
-
-        -- Position indicator
-        StatusLinePosition = { bg = colors.surface, fg = colors.fg },
-
-        -- Message system
-        StatusLineMessage = { bg = colors.bg, fg = colors.yellow, italic = true },
-
-        -- Special effects
-        StatusLineAccent = { bg = colors.bg, fg = colors.pink },
-        StatusLineSubtle = { bg = colors.bg, fg = colors.overlay },
-    }
-
-    for name, opts in pairs(highlights) do
-        vim.api.nvim_set_hl(0, name, opts)
     end
 end
 
@@ -264,8 +385,6 @@ local function get_lsp_info()
         return ''
     end)
 end
-
-
 
 -- Modern mode detection with icons
 local function get_mode_info()
@@ -436,7 +555,7 @@ function M.statusline()
 
     cache.last_update = now
 
-    -- Build components (removed LSP info)
+    -- Build components
     local mode = get_mode_info() or ''
     local file = get_file_info() or ''
     local git = get_git_info() or ''
@@ -454,8 +573,10 @@ function M.statusline()
     end
 
     -- Smart layout based on available width
-    local left = mode .. file .. git .. lsp .. message -- Include lsp here
-    local right = diagnostics .. position              -- Build final statusline
+    local left = mode .. file .. git .. lsp .. message
+    local right = diagnostics .. position
+
+    -- Build final statusline
     cache.statusline = string.format('%s%%=%s', left, right)
 
     return cache.statusline
@@ -482,7 +603,10 @@ function M.refresh_colors()
             cache[key].time = 0
         end
     end
-    vim.cmd('redrawstatus')
+    -- Force statusline redraw
+    vim.schedule(function()
+        vim.cmd('redrawstatus!')
+    end)
 end
 
 -- Setup function
@@ -542,11 +666,25 @@ function M.setup(opts)
         end
     })
 
-    -- Colorscheme changes
-    vim.api.nvim_create_autocmd('ColorScheme', {
+    -- Enhanced colorscheme detection
+    vim.api.nvim_create_autocmd({ 'ColorScheme', 'VimEnter', 'UIEnter' }, {
         group = group,
         callback = function()
-            vim.defer_fn(M.refresh_colors, 100)
+            -- Delay the refresh to ensure colorscheme is fully loaded
+            vim.defer_fn(function()
+                M.refresh_colors()
+            end, 50)
+        end
+    })
+
+    -- Background option changes (light/dark theme switches)
+    vim.api.nvim_create_autocmd('OptionSet', {
+        group = group,
+        pattern = 'background',
+        callback = function()
+            vim.defer_fn(function()
+                M.refresh_colors()
+            end, 50)
         end
     })
 
