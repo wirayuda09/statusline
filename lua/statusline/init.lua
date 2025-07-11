@@ -147,13 +147,22 @@ local function get_file_info()
 		return s
 	end)
 end
-
 local function get_git_info()
 	return get_cached("git", function()
+		-- Cek apakah kita ada di dalam repo Git
+		local is_inside_work_tree = vim.fn.systemlist("git rev-parse --is-inside-work-tree")[1]
+		if is_inside_work_tree ~= "true" then
+			return ""
+		end
+
 		local branch = vim.fn.systemlist("git rev-parse --abbrev-ref HEAD")[1]
-		return branch ~= "" and string.format(" %s %s", icons.git_branch, branch) or ""
+		if branch and branch ~= "" then
+			return string.format(" %s %s", icons.git_branch, branch)
+		end
+		return ""
 	end)
 end
+
 
 local function get_diagnostics()
 	local d = vim.diagnostic.get(0)
