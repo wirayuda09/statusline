@@ -77,13 +77,12 @@ Use the provided test scripts to verify compatibility:
 
 If a colorscheme doesn't provide certain highlight groups, the statusline will fall back to carefully chosen default colors.
 
-
 ```
 [session:window:pane] MODE filename git-branch
 ```
 
 - **Session**: Current tmux session name
-- **Window**: Current window name  
+- **Window**: Current window name
 - **Pane**: Current pane index (0-based)
 
 The tmux info is cached and updates every 2 seconds for performance. You can manually refresh it using:
