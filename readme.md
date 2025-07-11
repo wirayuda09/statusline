@@ -77,9 +77,6 @@ Use the provided test scripts to verify compatibility:
 
 If a colorscheme doesn't provide certain highlight groups, the statusline will fall back to carefully chosen default colors.
 
-## 📋 Tmux Integration
-
-When running Neovim inside a tmux session, the statusline will automatically display tmux information in the format:
 
 ```
 [session:window:pane] MODE filename git-branch
